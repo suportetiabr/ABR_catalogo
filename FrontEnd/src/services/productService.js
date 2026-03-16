@@ -1,20 +1,28 @@
 import { normalizeString } from "../utils/vehicleUtils";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
-const REQUEST_TIMEOUT = 10000; // Reduzido para 10s
+const API_BASE_URL = import.meta.env.PROD
+  ? "/api"
+  : (import.meta.env.VITE_API_URL || "http://localhost:4000/api");
+
+const REQUEST_TIMEOUT = 10000;
+const CACHE_DURATION = Number(
+  import.meta.env.VITE_CATALOG_TTL_MS || 24 * 60 * 60 * 1000
+);
+
+const STORAGE_KEY_CATALOG = "abr_catalog_snapshot";
 
 function sanitizeString(str, maxLength = 100) {
   if (typeof str !== "string") return "";
-  // remove caracteres potencialmente perigosos; o escape de " não é necessário dentro do []
   return str.replace(/[<>"'&]/g, "").trim().substring(0, maxLength);
 }
 
 function validatePaginationParams(page, limit) {
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
+
   return {
-    page: isNaN(pageNum) || pageNum < 1 ? 1 : Math.min(pageNum, 1000),
-    limit: isNaN(limitNum) || limitNum < 1 ? 20 : Math.min(limitNum, 100),
+    page: Number.isNaN(pageNum) || pageNum < 1 ? 1 : Math.min(pageNum, 1000),
+    limit: Number.isNaN(limitNum) || limitNum < 1 ? 20 : Math.min(limitNum, 100),
   };
 }
 
@@ -23,7 +31,6 @@ function normalizeTipoVeiculoFilterFront(v) {
   if (!up) return "";
   if (up === "MOTOR" || up === "M") return "MOTOR";
   if (up === "VEICULO" || up === "VEÍCULO" || up === "V") return "VEICULO";
-  // compat
   if (up === "VLL" || up === "VLP" || up === "MLL" || up === "MLP") return up;
   return up;
 }
@@ -33,12 +40,11 @@ function normalizeLinhaFilterFront(v) {
   if (!up) return "";
   if (up === "LEVE" || up === "L") return "LEVE";
   if (up === "PESADA" || up === "PESADO" || up === "P") return "PESADA";
-  // compat
   if (up === "VLL" || up === "VLP" || up === "MLL" || up === "MLP") return up;
   return up;
 }
 
-function validateFilters(filters) {
+function validateFilters(filters = {}) {
   const tv = normalizeTipoVeiculoFilterFront(filters.tipoVeiculo);
   const ln = normalizeLinhaFilterFront(filters.linha);
 
@@ -46,19 +52,12 @@ function validateFilters(filters) {
     search: sanitizeString(filters.search, 100),
     grupo: sanitizeString(filters.grupo, 50),
     fabricante: sanitizeString(filters.fabricante, 50),
-
-    // NOVO
     tipoVeiculo: sanitizeString(tv, 50),
     linha: sanitizeString(ln, 50),
-
     numero_original: sanitizeString(filters.numero_original, 50),
-
-    // permitir "descricao" também (se seu front usa)
     sortBy: ["codigo", "nome", "fabricante", "grupo", "descricao"].includes(filters.sortBy)
       ? filters.sortBy
       : "codigo",
-
-    // preserva se vier
     isConjunto: filters.isConjunto,
   };
 }
@@ -80,16 +79,9 @@ const cache = {
   timestamp: 0,
   catalog: null,
   catalogTimestamp: 0,
-  catalogFetching: null, // Promise para evitar requisições duplicadas
+  catalogFetching: null,
 };
 
-// 1 dia em millisegundos = 86.400.000ms
-const CACHE_DURATION = Number(process.env.REACT_APP_CATALOG_TTL_MS || 24 * 60 * 60 * 1000);
-const STORAGE_KEY_CATALOG = "abr_catalog_snapshot";
-
-/**
- * Funções de persistência localStorage com expiração
- */
 function saveToLocalStorage(key, data, ttlMs = CACHE_DURATION) {
   try {
     const payload = {
@@ -98,7 +90,6 @@ function saveToLocalStorage(key, data, ttlMs = CACHE_DURATION) {
     };
     localStorage.setItem(key, JSON.stringify(payload));
   } catch (e) {
-    // localStorage pode estar cheio ou desabilitado
     console.warn(`Falha ao salvar em localStorage (${key}):`, e.message);
   }
 }
@@ -107,11 +98,13 @@ function getFromLocalStorage(key) {
   try {
     const item = localStorage.getItem(key);
     if (!item) return null;
+
     const payload = JSON.parse(item);
     if (payload.expiresAt && Date.now() > payload.expiresAt) {
       localStorage.removeItem(key);
       return null;
     }
+
     return payload.data;
   } catch (e) {
     console.warn(`Falha ao ler localStorage (${key}):`, e.message);
@@ -119,10 +112,8 @@ function getFromLocalStorage(key) {
   }
 }
 
-// Removido: isCacheValid() (não era usado e quebrava o build em CI)
-
 function isCatalogCacheValid() {
-  return Date.now() - cache.catalogTimestamp < CACHE_DURATION;
+  return !!cache.catalog && Date.now() - cache.catalogTimestamp < CACHE_DURATION;
 }
 
 function restoreCatalogFromStorage() {
@@ -136,49 +127,105 @@ function restoreCatalogFromStorage() {
   return false;
 }
 
+function invalidateCache() {
+  cache.products = null;
+  cache.conjuntos = null;
+  cache.filters = null;
+  cache.status = null;
+  cache.timestamp = 0;
+}
+
+function invalidateCatalog() {
+  cache.catalog = null;
+  cache.catalogTimestamp = 0;
+  cache.catalogFetching = null;
+
+  try {
+    localStorage.removeItem(STORAGE_KEY_CATALOG);
+  } catch (e) {
+    console.warn("Falha ao remover catálogo do localStorage:", e.message);
+  }
+}
+
 async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+
     clearTimeout(timeoutId);
     return response;
   } catch (error) {
     clearTimeout(timeoutId);
-    if (error.name === "AbortError") throw new Error(`Requisição expirou (timeout ${REQUEST_TIMEOUT}ms)`);
+
+    if (error.name === "AbortError") {
+      throw new Error(`Requisição expirou (timeout ${REQUEST_TIMEOUT}ms)`);
+    }
+
     throw error;
   }
 }
 
 async function fetchWithRetry(url, options = {}, maxRetries = 0) {
-  // OTIMIZAÇÃO: Sem retrys automáticos - backend é rápido e confiável
-  // Se precisar de retrys, será feito no nível da aplicação (ex: em useEffect com estado)
-  const response = await fetchWithTimeout(url, options);
-  return response;
+  let lastError;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fetchWithTimeout(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxRetries) break;
+    }
+  }
+
+  throw lastError;
 }
 
 async function handleResponse(response) {
   if (!response) throw new Error("Resposta do servidor inválida");
 
-  let body = {};
-  try {
-    if (response.status === 204) return null;
-    body = await response.json();
-  } catch (e) {
+  if (response.status === 204) return null;
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
     const text = await response.text();
-    if (!response.ok) throw new Error(`Erro HTTP ${response.status}: ${text.substring(0, 200)}`);
-    return null;
+
+    if (!response.ok) {
+      throw new Error(`Erro HTTP ${response.status}: ${text.substring(0, 200)}`);
+    }
+
+    throw new Error("Resposta do servidor não está em JSON");
   }
 
-  // If backend returned explicit error payload, treat it as failure
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("JSON inválido retornado pelo servidor");
+  }
+
   if (body && body.error) {
-    const msg = String(body.error);
     const codePart = response.status ? ` (HTTP ${response.status})` : "";
-    throw new Error(msg + codePart);
+    throw new Error(String(body.error) + codePart);
   }
 
-  if (!response.ok) throw new Error(body.error || `Erro HTTP ${response.status}`);
-  if (typeof body !== "object" || body === null) throw new Error("Resposta do servidor não é um objeto JSON válido");
+  if (!response.ok) {
+    throw new Error(body?.error || `Erro HTTP ${response.status}`);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    throw new Error("Resposta do servidor não é um objeto JSON válido");
+  }
+
   return body;
 }
 
@@ -188,21 +235,17 @@ function validateParams(params) {
   return { page: validPage, limit: validLimit };
 }
 
-// ====== Snapshot (catalog) helpers ======
 export async function fetchCatalogSnapshot(force = false) {
-  // Se não foi forçado e cache em-memória é válido, retorna
   if (!force && cache.catalog && isCatalogCacheValid()) {
-    console.log("[Cache] Usando catálogo em-memória");
+    console.log("[Cache] Usando catálogo em memória");
     return cache.catalog;
   }
 
-  // Se há uma requisição em andamento, aguarda ela (evita requisições duplicadas)
   if (cache.catalogFetching) {
     console.log("[Cache] Aguardando requisição em andamento...");
     return cache.catalogFetching;
   }
 
-  // Se não foi forçado, tenta restaurar do localStorage
   if (!force && !cache.catalog) {
     if (restoreCatalogFromStorage()) {
       return cache.catalog;
@@ -210,26 +253,26 @@ export async function fetchCatalogSnapshot(force = false) {
   }
 
   console.log("[Cache] Buscando catálogo do servidor...");
-  const url = `${API_BASE_URL}/catalog` + (force ? "?reload=1" : "");
+  const url = `${API_BASE_URL}/catalog${force ? "?reload=1" : ""}`;
 
-  // Envolve em Promise para evitar requisições duplicadas enquanto uma está em andamento
   cache.catalogFetching = (async () => {
     try {
       const resp = await fetchWithRetry(url);
       const body = await handleResponse(resp);
 
-      if (!body || !body.data) throw new Error("Resposta inválida ao buscar snapshot do catálogo");
+      if (!body || !body.data) {
+        throw new Error("Resposta inválida ao buscar snapshot do catálogo");
+      }
 
       cache.catalog = body.data;
       cache.catalogTimestamp = Date.now();
 
-      // Salva no localStorage para persistência entre sessões (7 dias)
       saveToLocalStorage(STORAGE_KEY_CATALOG, cache.catalog, CACHE_DURATION);
       console.log("[Cache] Catálogo salvo em localStorage");
 
       return cache.catalog;
     } finally {
-      cache.catalogFetching = null; // Limpa após completar
+      cache.catalogFetching = null;
     }
   })();
 
@@ -240,14 +283,6 @@ export function getCachedCatalog() {
   return cache.catalog;
 }
 
-/**
- * REGRAS DE MATCH (aplicacoes.sigla_tipo):
- * - tipoVeiculo=MOTOR   => sigla_tipo começa com "M"
- * - tipoVeiculo=VEICULO => sigla_tipo começa com "V"
- * - linha=LEVE          => sigla_tipo termina com "L"
- * - linha=PESADA        => sigla_tipo termina com "P"
- * - compat: se vier VLL/VLP/MLL/MLP, compara direto com a sigla.
- */
 function matchesAplicacaoSigla(siglaRaw, tipoVeiculoFilter, linhaFilter) {
   const sigla = String(siglaRaw || "").trim().toUpperCase();
   if (!sigla) return false;
@@ -255,17 +290,16 @@ function matchesAplicacaoSigla(siglaRaw, tipoVeiculoFilter, linhaFilter) {
   const tv = normalizeTipoVeiculoFilterFront(tipoVeiculoFilter);
   const ln = normalizeLinhaFilterFront(linhaFilter);
 
-  // compat: se o filtro vier como sigla completa, exige igualdade
-  if (tv && (tv === "VLL" || tv === "VLP" || tv === "MLL" || tv === "MLP")) {
+  if (tv && ["VLL", "VLP", "MLL", "MLP"].includes(tv)) {
     return sigla === tv;
   }
-  if (ln && (ln === "VLL" || ln === "VLP" || ln === "MLL" || ln === "MLP")) {
+
+  if (ln && ["VLL", "VLP", "MLL", "MLP"].includes(ln)) {
     return sigla === ln;
   }
 
   if (tv === "MOTOR" && !sigla.startsWith("M")) return false;
   if (tv === "VEICULO" && !sigla.startsWith("V")) return false;
-
   if (ln === "LEVE" && !sigla.endsWith("L")) return false;
   if (ln === "PESADA" && !sigla.endsWith("P")) return false;
 
@@ -274,7 +308,10 @@ function matchesAplicacaoSigla(siglaRaw, tipoVeiculoFilter, linhaFilter) {
 
 export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 20) {
   if (!snapshot || typeof snapshot !== "object") {
-    return { data: [], pagination: { page: 1, limit, total: 0, totalPages: 0 } };
+    return {
+      data: [],
+      pagination: { page: 1, limit, total: 0, totalPages: 0 },
+    };
   }
 
   const productsArr = Array.isArray(snapshot.products) ? snapshot.products : [];
@@ -287,7 +324,11 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     const pai = (row.pai || row.codigo_conjunto || "").toString().trim();
     const filho = (row.filho || row.codigo_componente || "").toString().trim();
     if (!pai || !filho) continue;
-    if (!conjuntoChildrenMap.has(pai)) conjuntoChildrenMap.set(pai, []);
+
+    if (!conjuntoChildrenMap.has(pai)) {
+      conjuntoChildrenMap.set(pai, []);
+    }
+
     conjuntoChildrenMap.get(pai).push(filho);
   }
 
@@ -295,22 +336,29 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   for (const a of aplicacoesArr) {
     const cc = (a.codigo_conjunto || "").toString().trim();
     if (!cc) continue;
-    if (!appByConjunto.has(cc)) appByConjunto.set(cc, []);
+
+    if (!appByConjunto.has(cc)) {
+      appByConjunto.set(cc, []);
+    }
+
     appByConjunto.get(cc).push(a);
   }
 
-  // Mapa de benchmarks por código do produto
   const benchmarkByCode = new Map();
   for (const b of benchmarksArr) {
     const codigo = (b.codigo || "").toString().trim();
     if (!codigo) continue;
-    if (!benchmarkByCode.has(codigo)) benchmarkByCode.set(codigo, []);
+
+    if (!benchmarkByCode.has(codigo)) {
+      benchmarkByCode.set(codigo, []);
+    }
+
     benchmarkByCode.get(codigo).push(b);
   }
 
-  // Itens (conjuntos + produtos)
   const items = [];
   const productsByCode = new Map();
+
   for (const p of productsArr) {
     const code = (p.codigo_abr || p.codigo || "").toString().trim();
     if (code) productsByCode.set(code, p);
@@ -321,6 +369,7 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     const apps = appByConjunto.get(pai) || [];
     const fabricante = apps.length ? (apps[0].fabricante || "") : (prod.fabricante || "");
     const siglaTipo = apps.length ? (apps[0].sigla_tipo || "") : "";
+
     items.push({
       codigo: pai,
       descricao: prod.descricao || prod.nome || pai,
@@ -335,8 +384,10 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   for (const p of productsArr) {
     const codigo = (p.codigo_abr || p.codigo || "").toString().trim();
     if (!codigo) continue;
+
     const existsConjunto = items.some((i) => i.codigo === codigo && i.tipo === "conjunto");
     if (existsConjunto) continue;
+
     items.push({
       codigo,
       descricao: p.descricao || p.nome || codigo,
@@ -348,45 +399,51 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   }
 
   const validFilters = validateFilters(filters);
-
   const search = normalizeString(validFilters.search || "");
-  const grupoFilter = (validFilters.grupo || "").toString().trim().toLowerCase();
-  const fabricanteFilter = (validFilters.fabricante || "").toString().trim().toLowerCase();
+  const grupoFilter = String(validFilters.grupo || "").trim().toLowerCase();
+  const fabricanteFilter = String(validFilters.fabricante || "").trim().toLowerCase();
   const tipoVeiculoFilter = validFilters.tipoVeiculo || "";
   const linhaFilter = validFilters.linha || "";
   const sortBy = validFilters.sortBy || "codigo";
-  const isConjunto =
-    validFilters.isConjunto === true ? "conjunto" : validFilters.isConjunto === false ? "produto" : null;
 
-  // Precompute codes based on aplicacoes (fabricante/tipoVeiculo/linha)
+  const isConjunto =
+    validFilters.isConjunto === true
+      ? "conjunto"
+      : validFilters.isConjunto === false
+        ? "produto"
+        : null;
+
   let matchingCodes = null;
   const hasAplicFilter = !!(fabricanteFilter || tipoVeiculoFilter || linhaFilter);
+
   if (hasAplicFilter) {
     matchingCodes = new Set();
-    for (const [codigo_conjunto, apps] of appByConjunto.entries()) {
+
+    for (const [codigoConjunto, apps] of appByConjunto.entries()) {
       const matchesFab = fabricanteFilter
         ? apps.some((a) => normalizeString(a.fabricante || "").includes(fabricanteFilter))
         : true;
 
       const matchesTipoLinha =
         tipoVeiculoFilter || linhaFilter
-          ? apps.some((a) => matchesAplicacaoSigla(a.sigla_tipo || a.tipo, tipoVeiculoFilter, linhaFilter))
+          ? apps.some((a) =>
+            matchesAplicacaoSigla(a.sigla_tipo || a.tipo, tipoVeiculoFilter, linhaFilter)
+          )
           : true;
 
       if (matchesFab && matchesTipoLinha) {
-        matchingCodes.add(codigo_conjunto);
-        const filhos = conjuntoChildrenMap.get(codigo_conjunto) || [];
+        matchingCodes.add(codigoConjunto);
+
+        const filhos = conjuntoChildrenMap.get(codigoConjunto) || [];
         filhos.forEach((f) => matchingCodes.add(f));
       }
     }
   }
 
-  // Precompute codes that match search in benchmarks and aplicacoes
   let codesMatchingSearchAux = null;
   if (search) {
     codesMatchingSearchAux = new Set();
 
-    // Procura em benchmarks
     for (const [codigo, benchmarks] of benchmarkByCode.entries()) {
       const matchesBench = benchmarks.some((b) => {
         const numOrig = normalizeString(b.numero_original || "");
@@ -394,17 +451,18 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
         const tipo = normalizeString(b.tipo || "");
         return numOrig.includes(search) || origem.includes(search) || tipo.includes(search);
       });
+
       if (matchesBench) codesMatchingSearchAux.add(codigo);
     }
 
-    // Procura em aplicacoes
-    for (const [codigo_conjunto, apps] of appByConjunto.entries()) {
+    for (const [codigoConjunto, apps] of appByConjunto.entries()) {
       const matchesApp = apps.some((a) => {
         const veiculo = normalizeString(a.veiculo || a.veiculo_nome || "");
         const fabricante = normalizeString(a.fabricante || a.marca || "");
         const modelo = normalizeString(a.modelo || a.model || "");
         const ano = normalizeString(a.ano || a.year || "");
         const tipo = normalizeString(a.tipo || "");
+
         return (
           veiculo.includes(search) ||
           fabricante.includes(search) ||
@@ -413,9 +471,11 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
           tipo.includes(search)
         );
       });
+
       if (matchesApp) {
-        codesMatchingSearchAux.add(codigo_conjunto);
-        const filhos = conjuntoChildrenMap.get(codigo_conjunto) || [];
+        codesMatchingSearchAux.add(codigoConjunto);
+
+        const filhos = conjuntoChildrenMap.get(codigoConjunto) || [];
         filhos.forEach((f) => codesMatchingSearchAux.add(f));
       }
     }
@@ -424,13 +484,10 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   const filtered = items.filter((it) => {
     if (isConjunto && it.tipo !== isConjunto) return false;
 
-    // Quando há filtro de tipo/linha/fabricante: exige que o item esteja na lista calculada por aplicacoes
-    if (matchingCodes) {
-      if (!matchingCodes.has(it.codigo)) return false;
-    }
+    if (matchingCodes && !matchingCodes.has(it.codigo)) return false;
 
     if (grupoFilter) {
-      const g = (it.grupo || "").toString().trim().toLowerCase();
+      const g = String(it.grupo || "").trim().toLowerCase();
       if (g !== grupoFilter) return false;
     }
 
@@ -438,8 +495,6 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
       const c = normalizeString(it.codigo || "");
       const d = normalizeString(it.descricao || "");
       const matchesMainFields = c.includes(search) || d.includes(search);
-
-      // Se não encontrou nos campos principais, procura nos benchmarks/aplicacoes
       const matchesAuxiliary = codesMatchingSearchAux && codesMatchingSearchAux.has(it.codigo);
 
       if (!matchesMainFields && !matchesAuxiliary) return false;
@@ -449,8 +504,14 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   });
 
   filtered.sort((a, b) => {
-    if (sortBy === "descricao") return String(a.descricao || "").localeCompare(String(b.descricao || ""));
-    if (sortBy === "grupo") return String(a.grupo || "").localeCompare(String(b.grupo || ""));
+    if (sortBy === "descricao") {
+      return String(a.descricao || "").localeCompare(String(b.descricao || ""));
+    }
+
+    if (sortBy === "grupo") {
+      return String(a.grupo || "").localeCompare(String(b.grupo || ""));
+    }
+
     return String(a.codigo || "").localeCompare(String(b.codigo || ""));
   });
 
@@ -460,16 +521,28 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
   const offset = (safePage - 1) * limit;
   const pageItems = filtered.slice(offset, offset + limit);
 
-  return { data: pageItems, pagination: { page: safePage, limit, total, totalPages } };
+  return {
+    data: pageItems,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages,
+    },
+  };
 }
 
-// ====== API functions ======
 export async function fetchProducts(search = "") {
   try {
-    const url = new URL(`${API_BASE_URL}/products`);
-    if (search && typeof search === "string") url.searchParams.set("search", search.trim().substring(0, 100));
+    const url = new URL(`${API_BASE_URL}/products`, window.location.origin);
+
+    if (search && typeof search === "string") {
+      url.searchParams.set("search", search.trim().substring(0, 100));
+    }
+
     const response = await fetchWithRetry(url.toString());
     const data = await handleResponse(response);
+
     return Array.isArray(data) ? data : [];
   } catch (error) {
     throw new Error(`Falha ao carregar produtos: ${error.message}`);
@@ -483,13 +556,16 @@ export async function fetchProductsPaginated(page = 1, limit = 20, filters = {})
   if (cache.catalog && isCatalogCacheValid()) {
     try {
       const result = filterCatalogSnapshot(cache.catalog, validFilters, validPage, validLimit);
-      return { data: result.data, pagination: result.pagination };
+      return {
+        data: result.data,
+        pagination: result.pagination,
+      };
     } catch (e) {
       console.warn("fetchProductsPaginated: fallback para API (erro no filtro local):", e.message || e);
     }
   }
 
-  const url = new URL(`${API_BASE_URL}/products/paginated-optimized`);
+  const url = new URL(`${API_BASE_URL}/products/paginated-optimized`, window.location.origin);
   url.searchParams.set("page", String(validPage));
   url.searchParams.set("limit", String(validLimit));
 
@@ -507,12 +583,12 @@ export async function fetchProductsPaginated(page = 1, limit = 20, filters = {})
   return {
     data: Array.isArray(body.data) ? body.data : [],
     pagination: {
-      page: parseInt(body.pagination?.page) || validPage,
-      limit: parseInt(body.pagination?.limit) || validLimit,
-      total: parseInt(body.pagination?.total) || 0,
+      page: parseInt(body.pagination?.page, 10) || validPage,
+      limit: parseInt(body.pagination?.limit, 10) || validLimit,
+      total: parseInt(body.pagination?.total, 10) || 0,
       totalPages:
-        parseInt(body.pagination?.totalPages) ||
-        Math.max(1, Math.ceil((parseInt(body.pagination?.total) || 0) / validLimit)),
+        parseInt(body.pagination?.totalPages, 10) ||
+        Math.max(1, Math.ceil((parseInt(body.pagination?.total, 10) || 0) / validLimit)),
     },
   };
 }
@@ -524,13 +600,16 @@ export async function fetchConjuntosPaginated(page = 1, limit = 20, filters = {}
   if (cache.catalog && isCatalogCacheValid()) {
     try {
       const result = filterCatalogSnapshot(cache.catalog, validFilters, validPage, validLimit);
-      return { data: result.data, pagination: result.pagination };
+      return {
+        data: result.data,
+        pagination: result.pagination,
+      };
     } catch (e) {
       console.warn("fetchConjuntosPaginated: fallback para API (erro no filtro local):", e.message || e);
     }
   }
 
-  const url = new URL(`${API_BASE_URL}/conjuntos/paginated`);
+  const url = new URL(`${API_BASE_URL}/conjuntos/paginated`, window.location.origin);
   url.searchParams.set("page", String(validPage));
   url.searchParams.set("limit", String(validLimit));
 
@@ -550,32 +629,36 @@ export async function fetchConjuntosPaginated(page = 1, limit = 20, filters = {}
   return {
     data: cache.conjuntos,
     pagination: {
-      page: parseInt(body.pagination?.page) || validPage,
-      limit: parseInt(body.pagination?.limit) || validLimit,
-      total: parseInt(body.pagination?.total) || 0,
+      page: parseInt(body.pagination?.page, 10) || validPage,
+      limit: parseInt(body.pagination?.limit, 10) || validLimit,
+      total: parseInt(body.pagination?.total, 10) || 0,
       totalPages:
-        parseInt(body.pagination?.totalPages) ||
-        Math.max(1, Math.ceil((parseInt(body.pagination?.total) || 0) / validLimit)),
+        parseInt(body.pagination?.totalPages, 10) ||
+        Math.max(1, Math.ceil((parseInt(body.pagination?.total, 10) || 0) / validLimit)),
     },
   };
 }
 
 export async function fetchProductDetails(code) {
   const validCode = validateProductCode(code);
-  if (!validCode) throw new Error("Código do produto inválido");
+  if (!validCode) {
+    throw new Error("Código do produto inválido");
+  }
 
   const normalizedCode = normalizeCodeFront(validCode);
 
-  // snapshot fast-path
   if (cache.catalog && isCatalogCacheValid()) {
     const snap = cache.catalog;
 
     const byProducts = (Array.isArray(snap.products) ? snap.products : []).find(
       (p) => (p.codigo_abr || p.codigo || "").toString().trim().toUpperCase() === normalizedCode
     );
+
     if (byProducts) {
       const conjuntos = (Array.isArray(snap.conjuntos) ? snap.conjuntos : [])
-        .filter((c) => (c.pai || c.codigo_conjunto || "").toString().trim().toUpperCase() === normalizedCode)
+        .filter(
+          (c) => (c.pai || c.codigo_conjunto || "").toString().trim().toUpperCase() === normalizedCode
+        )
         .map((c) => ({
           filho: c.filho || c.codigo || c.codigo_componente || "",
           filho_des: c.filho_des || c.descricao || c.des || null,
@@ -585,9 +668,11 @@ export async function fetchProductDetails(code) {
       const aplicacoes = (Array.isArray(snap.aplicacoes) ? snap.aplicacoes : []).filter(
         (a) => (a.codigo_conjunto || "").toString().trim().toUpperCase() === normalizedCode
       );
+
       const benchmarks = (Array.isArray(snap.benchmarks) ? snap.benchmarks : []).filter(
         (b) => (b.codigo || "").toString().trim().toUpperCase() === normalizedCode
       );
+
       const memberships = (Array.isArray(snap.conjuntos) ? snap.conjuntos : [])
         .filter((c) => (c.filho || "").toString().trim().toUpperCase() === normalizedCode)
         .map((c) => ({
@@ -595,13 +680,21 @@ export async function fetchProductDetails(code) {
           quantidade: c.qtd_explosao || c.quantidade || c.qtd || 1,
         }));
 
-      return { data: { product: byProducts, conjuntos, aplicacoes, benchmarks, memberships } };
+      return {
+        data: {
+          product: byProducts,
+          conjuntos,
+          aplicacoes,
+          benchmarks,
+          memberships,
+        },
+      };
     }
   }
 
-  // server
   const url = `${API_BASE_URL}/products/${encodeURIComponent(normalizedCode)}`;
   const resp = await fetchWithRetry(url);
+
   const contentType = resp.headers.get("content-type") || "";
   if (contentType.includes("text/html")) {
     const text = await resp.text();
@@ -609,11 +702,14 @@ export async function fetchProductDetails(code) {
       `Resposta inesperada (HTML). Conteúdo truncado: ${text.substring(0, 200).replace(/\s+/g, " ")}`
     );
   }
-  return await handleResponse(resp);
+
+  return handleResponse(resp);
 }
 
 export async function fetchFilters() {
   try {
+    if (cache.filters) return cache.filters;
+
     const url = `${API_BASE_URL}/filters`;
     const response = await fetchWithRetry(url);
     const data = await handleResponse(response);
@@ -629,38 +725,66 @@ export async function fetchFilters() {
       )
       .filter(Boolean);
 
-    return {
+    cache.filters = {
       grupos: Array.isArray(data.grupos) ? data.grupos : [],
       fabricantes,
       vehicleTypes: Array.isArray(data.vehicle_types) ? data.vehicle_types : ["MOTOR", "VEICULO"],
       linhas: Array.isArray(data.linhas) ? data.linhas : ["LEVE", "PESADA"],
     };
-  } catch (e) {
-    return { grupos: [], fabricantes: [], vehicleTypes: ["MOTOR", "VEICULO"], linhas: ["LEVE", "PESADA"] };
+
+    return cache.filters;
+  } catch {
+    return {
+      grupos: [],
+      fabricantes: [],
+      vehicleTypes: ["MOTOR", "VEICULO"],
+      linhas: ["LEVE", "PESADA"],
+    };
   }
 }
 
 export async function fetchCatalogStatus() {
   try {
+    if (cache.status) return cache.status;
+
     if (cache.catalog && isCatalogCacheValid()) {
       const snap = cache.catalog;
       const totalProducts = Array.isArray(snap.products) ? snap.products.length : 0;
       const totalConjuntos = Array.isArray(snap.conjuntos)
         ? new Set(snap.conjuntos.map((c) => c.pai || c.codigo_conjunto)).size
         : 0;
-      return { totalProducts, totalConjuntos, lastUpdate: new Date(cache.catalogTimestamp).toISOString() };
+
+      cache.status = {
+        totalProducts,
+        totalConjuntos,
+        lastUpdate: new Date(cache.catalogTimestamp).toISOString(),
+      };
+
+      return cache.status;
     }
+
     const url = `${API_BASE_URL}/status`;
     const response = await fetchWithRetry(url);
     const data = await handleResponse(response);
-    return {
-      totalProducts: parseInt(data.totalProducts) || 0,
-      totalConjuntos: parseInt(data.totalConjuntos) || 0,
+
+    cache.status = {
+      totalProducts: parseInt(data.totalProducts, 10) || 0,
+      totalConjuntos: parseInt(data.totalConjuntos, 10) || 0,
       lastUpdate: data.lastUpdate || null,
     };
-  } catch (error) {
-    return { totalProducts: 0, totalConjuntos: 0, lastUpdate: null };
+
+    return cache.status;
+  } catch {
+    return {
+      totalProducts: 0,
+      totalConjuntos: 0,
+      lastUpdate: null,
+    };
   }
 }
 
-// Tentar restaurar catálogo do localStorage na inicialização\nif (typeof window !== \"undefined\" && window.localStorage) {\n  restoreCatalogFromStorage();\n}\n\nexport { invalidateCache as invalidateSimpleCache, invalidateCatalog };
+if (typeof window !== "undefined" && window.localStorage) {
+  restoreCatalogFromStorage();
+}
+
+export { invalidateCache as invalidateSimpleCache, invalidateCatalog };

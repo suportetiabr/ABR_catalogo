@@ -70,7 +70,7 @@ export function CatalogProvider({ children }) {
         console.log('CatalogContext: Added', products.length, 'products to cache');
 
         setFiltersLoading(false);
-        if (process.env.NODE_ENV === 'development') {
+        if (import.meta.env.DEV) {
           console.info('[CatalogContext] snapshot preloaded', {
             products: Array.isArray(snapshot.products) ? snapshot.products.length : 0,
             conjuntos: Array.isArray(snapshot.conjuntos) ? snapshot.conjuntos.length : 0

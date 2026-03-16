@@ -13,7 +13,7 @@ function ConjuntoGallery({ conjuntos = [], onPieceClick }) {
 
   // ✅ Logs só quando muda a lista (e só em dev) — sem spam infinito
   useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
+    if (!import.meta.env.DEV) return;
 
     console.group && console.group("ConjuntoGallery");
     console.log("ConjuntoGallery: conjuntos (raw from backend):", conjuntos);
