@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import winston from "winston";
+import compression from "compression";
 
 import productRoutes from "./routes/productRoutes.js";
 import { notFound } from "./middlewares/notFound.js";
@@ -38,7 +39,7 @@ const logger = winston.createLogger({
 // Middleware de rate limiting global
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100, // limite de 100 requests por IP por janela
+  max: 500, // limite de 500 requests por IP por janela
   message: {
     error: 'Too many requests from this IP, please try again later.'
   },
@@ -70,7 +71,7 @@ app.set('trust proxy', true);
 // Lê ALLOWED_FRONTEND_URL do env para permitir dynamic frontend URLs
 const allowedFrontendUrls = process.env.ALLOWED_FRONTEND_URL
   ? process.env.ALLOWED_FRONTEND_URL.split(',').map(s => s.trim()).filter(Boolean)
-  : ['https://abr-catalogo.vercel.app', 'http://localhost:3000'];
+  : ['https://abr-catalogo.vercel.app', 'http://localhost:3000', 'http://localhost:4173'];
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -88,6 +89,9 @@ app.use(helmet({
     preload: true
   }
 }));
+
+// Middleware de compressão
+app.use(compression());
 
 // Middleware de rate limiting
 app.use(limiter);

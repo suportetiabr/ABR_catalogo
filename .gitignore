@@ -53,20 +53,37 @@ coverage/
 jest-html-reporters-*.html
 
 # =============================
-# LOGS
+# ARQUIVOS SENSÍVEIS E TEMPORÁRIOS
 # =============================
+*.txt
 *.log
 logs/
 *.log.*
-
-# =============================
-# MISC
-# =============================
-*.bak
 *.tmp
+*.bak
 *.orig
 *.old
 *.lock
+
+# Arquivos de configuração sensíveis
+config.local.*
+secrets.*
+*.secret
+
+# Arquivos de backup e temporários do sistema
+*.swp
+*.swo
+*~
+
+# Arquivos de debug e profiling
+*.cpuprofile
+*.heapprofile
+
+# Arquivos de IDE específicos
+.vscode/settings.json
+.idea/workspace.xml
+*.sublime-project
+*.sublime-workspace
 
 # =============================
 # SISTEMAS DE VERSÃO/DEPLOY
@@ -92,7 +109,6 @@ package-lock.json
 # =============================
 dist/
 build/
-.vite/
 .cache/
 vite.config.timestamp-*
 vite.config.js.timestamp-*

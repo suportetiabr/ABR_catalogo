@@ -36,7 +36,7 @@ class ErrorBoundary extends React.Component {
               Desculpe, ocorreu um erro inesperado na aplicação.
             </p>
 
-            {process.env.NODE_ENV === "development" && (
+            {import.meta.env.DEV && (
               <details style={styles.details}>
                 <summary style={styles.summary}>Detalhes do erro (desenvolvimento)</summary>
                 <pre style={styles.errorText}>

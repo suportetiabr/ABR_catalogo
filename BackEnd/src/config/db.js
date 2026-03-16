@@ -19,26 +19,22 @@ const pool = mysql.createPool({
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  
+
   // Configuração de pool otimizada para consumo eficiente de recursos
   waitForConnections: true,                                         // Aguardar por conexão disponível ao invés de falhar
   connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),  // Limite máximo de conexões ativas
   queueLimit: 0,                                                    // Ilimitado (use com cuidado)
-  
-  // Timeouts para evitar conexões travadas
-  connectionTimeout: parseInt(process.env.DB_CONN_TIMEOUT || "10000", 10),  // 10s para estabelecer conexão
-  acquireTimeout: parseInt(process.env.DB_ACQUIRE_TIMEOUT || "10000", 10),  // 10s para adquirir conexão do pool
-  
+
   // Segurança e confiabilidade
   enableKeepAlive: true,                // Manter conexão viva
   decimalNumbers: true,                 // Preservar precisão de números decimais
   multipleStatements: false,            // Desabilitar múltiplas statements (segurança)
   supportBigNumbers: true,              // Suportar números grandes
   bigNumberStrings: false,              // Retornar como número, não string
-  
+
   // Configurações de charset
   charset: "utf8mb4",
-  
+
   // Tratamento de timezone
   timezone: process.env.DB_TIMEZONE || "+00:00",
 });
@@ -72,14 +68,14 @@ export async function query(sql, params = [], retryCount = 2) {
     return rows;
   } catch (error) {
     // Classificar tipo de erro
-    const isConnectionError = 
+    const isConnectionError =
       error.code === "ECONNREFUSED" ||
       error.code === "ENOTFOUND" ||
       error.code === "PROTOCOL_CONNECTION_LOST" ||
       error.code === "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR" ||
       error.code === "PROTOCOL_ENQUEUE_AFTER_DESTROY";
-    
-    const isTimeout = 
+
+    const isTimeout =
       error.code === "PROTOCOL_SEQUENCE_TIMEOUT" ||
       error.code === "ETIMEDOUT" ||
       error.code === "EHOSTUNREACH";
@@ -90,10 +86,10 @@ export async function query(sql, params = [], retryCount = 2) {
       console.warn(
         `Erro de conexão ao BD (${error.code}). Aguardando ${delay}ms antes de retry #${3 - retryCount}...`
       );
-      
+
       // Aguardar antes de tentar novamente
       await new Promise((resolve) => setTimeout(resolve, delay));
-      
+
       // Tentar novamente recursivamente
       return query(sql, params, retryCount - 1);
     }
@@ -118,7 +114,7 @@ export async function query(sql, params = [], retryCount = 2) {
 export async function beginTransaction() {
   const connection = await pool.getConnection();
   await connection.beginTransaction();
-  
+
   return {
     query: async (sql, params = []) => {
       if (!sql || typeof sql !== "string") {

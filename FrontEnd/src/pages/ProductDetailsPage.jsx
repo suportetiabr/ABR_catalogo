@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { useNotification } from "../hooks/useNotification";
-import { useProductNavigation } from "../hooks/useProductNavigation";
+// import { useProductNavigation } from "../hooks/useProductNavigation";
 import LoadingSpinner from "../components/LoadingSpinner";
 import ErrorMessage from "../components/ErrorMessage";
 import EmptyState from "../components/EmptyState";
@@ -20,6 +20,7 @@ import caixasImg from "../assets/caixas_2.webp";
 function ProductDetailsPage() {
   const { code } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const notify = useNotification();
 
   const { preloadState, getFromProductsCache } = useCatalogState();
@@ -28,13 +29,54 @@ function ProductDetailsPage() {
   const preloadLoaded = preloadState?.loaded;
   const preloadSnapshot = preloadState?.snapshot;
 
-  const {
-    navigateToProduct,
-    navigateToConjuntoPiece,
-    navigateToMembershipConjunto,
-    goBackToPreviousProduct,
-    clearHistory,
-  } = useProductNavigation();
+  // Navigation functions
+  const navigateToProduct = useCallback((productCode, context = null, additionalState = {}) => {
+    if (!productCode) return;
+    const path = `/produtos/${encodeURIComponent(String(productCode))}`;
+    const state = {
+      ...additionalState,
+      fromProduct: context?.fromProduct || null,
+      context: context?.type || null,
+      navigationTimestamp: Date.now(),
+    };
+    navigate(path, { state });
+  }, [navigate]);
+
+  const navigateToConjuntoPiece = useCallback((pieceCode, parentCode) => {
+    if (!pieceCode) return;
+    navigateToProduct(pieceCode, {
+      type: 'from-conjunto',
+      fromProduct: parentCode
+    }, {
+      parentProductCode: parentCode,
+      navigationType: 'conjunto'
+    });
+  }, [navigateToProduct]);
+
+  const navigateToMembershipConjunto = useCallback((conjuntoCode, pieceCode) => {
+    if (!conjuntoCode) return;
+    navigateToProduct(conjuntoCode, {
+      type: 'from-membership',
+      fromProduct: pieceCode
+    }, {
+      childProductCode: pieceCode,
+      navigationType: 'membership'
+    });
+  }, [navigateToProduct]);
+
+  const goBackToPreviousProduct = useCallback((fallbackPath = "/") => {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return true;
+    } else {
+      navigate(fallbackPath);
+      return false;
+    }
+  }, [navigate]);
+
+  const clearHistory = useCallback(() => {
+    navigate("/");
+  }, [navigate]);
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);

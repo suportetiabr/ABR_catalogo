@@ -5,15 +5,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
 
-  <!-- Security Headers -->
-  <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' http://localhost:4000 https://abr-catalogo.onrender.com https://api.ipify.org; object-src 'none'; base-uri 'self'; form-action 'self';" />
-  <meta http-equiv="X-Content-Type-Options" content="nosniff" />
-  <meta http-equiv="X-Frame-Options" content="DENY" />
-  <meta http-equiv="X-XSS-Protection" content="1; mode=block" />
-  <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
-
-  <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+  <link rel="icon" href="/favicon.ico" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="theme-color" content="#FF6B35" />
@@ -32,14 +24,14 @@
   <meta property="og:title" content="Catálogo Eletrônico ABR" />
   <meta property="og:description" content="Consulta moderna e ágil de produtos da ABR Auto Peças." />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="%PUBLIC_URL%/logo192.png" />
+  <meta property="og:image" content="/logo192.png" />
   <meta property="og:site_name" content="ABR Auto Peças" />
 
   <!-- Mobile Icon -->
-  <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+  <link rel="apple-touch-icon" href="/logo192.png" />
 
   <!-- Manifest -->
-  <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+  <link rel="manifest" href="/manifest.json" />
 
   <!-- Webfont opcional (melhora MUITO a apresentação) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -52,6 +44,7 @@
 <body style="font-family: 'Inter', sans-serif;">
   <noscript>Você precisa ativar o JavaScript para executar este aplicativo.</noscript>
   <div id="root"></div>
+  <script type="module" src="/src/index.jsx"></script>
 </body>
 
 </html>

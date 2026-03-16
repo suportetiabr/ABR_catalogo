@@ -7,7 +7,7 @@ import EmptyState from "../components/EmptyState";
 import CookieConsent from "../components/CookieConsent";
 import useLazyLoad from "../hooks/useLazyLoad";
 import Header from "../components/Header";
-import { useNavigation } from "../contexts/NavigationContext";
+// import { useNavigation } from "../contexts/NavigationContext";
 import useAnalytics from "../hooks/useAnalytics";
 import {
   fetchCatalogSnapshot,
@@ -85,7 +85,7 @@ function labelLinha(v) {
 
 function CatalogPage() {
   const { catalogState, updateCatalogState, preloadState, addToProductsCache } = useCatalogState();
-  const navigation = useNavigation();
+  // const navigation = useNavigation();
   const navigate = useNavigate();
   const location = useLocation();
   const mountedRef = useRef(true);
@@ -513,24 +513,13 @@ function CatalogPage() {
     });
 
     // Usa NavigationContext para push (guarda state completo na entry)
-    try {
-      navigation.push(productUrl, {
+    navigate(productUrl, {
+      state: {
         fromCatalog: true,
         catalogState: { page: catalogState.currentPage, filters: catalogState.currentFilters },
         pageState,
-      });
-    } catch (e) {
-      // Fallback: use react-router navigate if NavigationContext falhar
-      try {
-        navigate(productUrl, {
-          state: {
-            fromCatalog: true,
-            catalogState: { page: catalogState.currentPage, filters: catalogState.currentFilters },
-            pageState,
-          },
-        });
-      } catch (er) { }
-    }
+      },
+    });
   };
 
   const handleImageError = useCallback((codigo) => {
@@ -550,7 +539,7 @@ function CatalogPage() {
 
   return (
     <div className="catalog-wrapper">
-      <Header onLogoClick={navigation.clearHistory}>
+      <Header onLogoClick={() => navigate("/")}>
         <div className="stats-badge">
           <span className="stats-number">{totalItems}</span>
           <span className="stats-label">itens</span>

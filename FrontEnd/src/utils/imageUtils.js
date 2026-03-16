@@ -4,11 +4,11 @@
 // emit an empty string and log a warning so missing configuration is
 // obvious during development or in production.
 
-const RAW_PREFIX = process.env.REACT_APP_CLOUDINARY_FOLDER;
+const RAW_PREFIX = import.meta.env.VITE_CLOUDINARY_FOLDER;
 if (!RAW_PREFIX || !RAW_PREFIX.trim()) {
     // throw during build so deployment fails if env var is missing.
     throw new Error(
-        "REACT_APP_CLOUDINARY_FOLDER must be defined in the environment; " +
+        "VITE_CLOUDINARY_FOLDER must be defined in the environment; " +
         "check your .env or the hosting platform settings."
     );
 }
