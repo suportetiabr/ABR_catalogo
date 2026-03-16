@@ -11,6 +11,10 @@
     ],
     "routes": [
         {
+            "src": "/api/(.*)",
+            "dest": "https://abr.ind.br/api/$1"
+        },
+        {
             "src": "/(.*)",
             "dest": "/FrontEnd/dist/$1"
         }
