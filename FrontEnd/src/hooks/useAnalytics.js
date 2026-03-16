@@ -19,7 +19,9 @@ const useAnalytics = (preferences) => {
 
     const sendLog = useCallback(async (payload) => {
         try {
-            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+            const apiUrl = import.meta.env.PROD
+                ? "/api"
+                : (import.meta.env.VITE_API_URL || 'http://localhost:4000/api');
             const res = await fetch(`${apiUrl}/log`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
