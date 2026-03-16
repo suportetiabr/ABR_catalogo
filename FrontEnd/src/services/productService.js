@@ -156,7 +156,7 @@ async function fetchWithTimeout(url, options = {}) {
       ...options,
       signal: controller.signal,
       headers: {
-        "Content-Type": "application/json",
+        Accept: "application/json",
         ...(options.headers || {}),
       },
     });
@@ -174,7 +174,7 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
-async function fetchWithRetry(url, options = {}, maxRetries = 0) {
+async function fetchWithRetry(url, options = {}, maxRetries = 1) {
   let lastError;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -191,7 +191,6 @@ async function fetchWithRetry(url, options = {}, maxRetries = 0) {
 
 async function handleResponse(response) {
   if (!response) throw new Error("Resposta do servidor inválida");
-
   if (response.status === 204) return null;
 
   const contentType = response.headers.get("content-type") || "";
@@ -199,11 +198,19 @@ async function handleResponse(response) {
   if (!contentType.includes("application/json")) {
     const text = await response.text();
 
+    console.error("[API] Resposta não JSON recebida:", {
+      status: response.status,
+      contentType,
+      bodyPreview: text.substring(0, 500),
+    });
+
     if (!response.ok) {
       throw new Error(`Erro HTTP ${response.status}: ${text.substring(0, 200)}`);
     }
 
-    throw new Error("Resposta do servidor não está em JSON");
+    throw new Error(
+      `Resposta inesperada do servidor. Status: ${response.status}. Content-Type: ${contentType}. Preview: ${text.substring(0, 120)}`
+    );
   }
 
   let body;
@@ -252,12 +259,18 @@ export async function fetchCatalogSnapshot(force = false) {
     }
   }
 
-  console.log("[Cache] Buscando catálogo do servidor...");
   const url = `${API_BASE_URL}/catalog${force ? "?reload=1" : ""}`;
+  console.log("[Cache] Buscando catálogo do servidor...", url);
 
   cache.catalogFetching = (async () => {
     try {
       const resp = await fetchWithRetry(url);
+      console.log("[API] Snapshot response:", {
+        url,
+        status: resp.status,
+        contentType: resp.headers.get("content-type"),
+      });
+
       const body = await handleResponse(resp);
 
       if (!body || !body.data) {
@@ -290,13 +303,8 @@ function matchesAplicacaoSigla(siglaRaw, tipoVeiculoFilter, linhaFilter) {
   const tv = normalizeTipoVeiculoFilterFront(tipoVeiculoFilter);
   const ln = normalizeLinhaFilterFront(linhaFilter);
 
-  if (tv && ["VLL", "VLP", "MLL", "MLP"].includes(tv)) {
-    return sigla === tv;
-  }
-
-  if (ln && ["VLL", "VLP", "MLL", "MLP"].includes(ln)) {
-    return sigla === ln;
-  }
+  if (tv && ["VLL", "VLP", "MLL", "MLP"].includes(tv)) return sigla === tv;
+  if (ln && ["VLL", "VLP", "MLL", "MLP"].includes(ln)) return sigla === ln;
 
   if (tv === "MOTOR" && !sigla.startsWith("M")) return false;
   if (tv === "VEICULO" && !sigla.startsWith("V")) return false;
@@ -325,10 +333,7 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     const filho = (row.filho || row.codigo_componente || "").toString().trim();
     if (!pai || !filho) continue;
 
-    if (!conjuntoChildrenMap.has(pai)) {
-      conjuntoChildrenMap.set(pai, []);
-    }
-
+    if (!conjuntoChildrenMap.has(pai)) conjuntoChildrenMap.set(pai, []);
     conjuntoChildrenMap.get(pai).push(filho);
   }
 
@@ -337,10 +342,7 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     const cc = (a.codigo_conjunto || "").toString().trim();
     if (!cc) continue;
 
-    if (!appByConjunto.has(cc)) {
-      appByConjunto.set(cc, []);
-    }
-
+    if (!appByConjunto.has(cc)) appByConjunto.set(cc, []);
     appByConjunto.get(cc).push(a);
   }
 
@@ -349,10 +351,7 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     const codigo = (b.codigo || "").toString().trim();
     if (!codigo) continue;
 
-    if (!benchmarkByCode.has(codigo)) {
-      benchmarkByCode.set(codigo, []);
-    }
-
+    if (!benchmarkByCode.has(codigo)) benchmarkByCode.set(codigo, []);
     benchmarkByCode.get(codigo).push(b);
   }
 
@@ -433,7 +432,6 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
 
       if (matchesFab && matchesTipoLinha) {
         matchingCodes.add(codigoConjunto);
-
         const filhos = conjuntoChildrenMap.get(codigoConjunto) || [];
         filhos.forEach((f) => matchingCodes.add(f));
       }
@@ -474,7 +472,6 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
 
       if (matchesApp) {
         codesMatchingSearchAux.add(codigoConjunto);
-
         const filhos = conjuntoChildrenMap.get(codigoConjunto) || [];
         filhos.forEach((f) => codesMatchingSearchAux.add(f));
       }
@@ -483,7 +480,6 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
 
   const filtered = items.filter((it) => {
     if (isConjunto && it.tipo !== isConjunto) return false;
-
     if (matchingCodes && !matchingCodes.has(it.codigo)) return false;
 
     if (grupoFilter) {
@@ -507,11 +503,9 @@ export function filterCatalogSnapshot(snapshot, filters = {}, page = 1, limit = 
     if (sortBy === "descricao") {
       return String(a.descricao || "").localeCompare(String(b.descricao || ""));
     }
-
     if (sortBy === "grupo") {
       return String(a.grupo || "").localeCompare(String(b.grupo || ""));
     }
-
     return String(a.codigo || "").localeCompare(String(b.codigo || ""));
   });
 
@@ -542,7 +536,6 @@ export async function fetchProducts(search = "") {
 
     const response = await fetchWithRetry(url.toString());
     const data = await handleResponse(response);
-
     return Array.isArray(data) ? data : [];
   } catch (error) {
     throw new Error(`Falha ao carregar produtos: ${error.message}`);
@@ -556,10 +549,7 @@ export async function fetchProductsPaginated(page = 1, limit = 20, filters = {})
   if (cache.catalog && isCatalogCacheValid()) {
     try {
       const result = filterCatalogSnapshot(cache.catalog, validFilters, validPage, validLimit);
-      return {
-        data: result.data,
-        pagination: result.pagination,
-      };
+      return { data: result.data, pagination: result.pagination };
     } catch (e) {
       console.warn("fetchProductsPaginated: fallback para API (erro no filtro local):", e.message || e);
     }
@@ -600,10 +590,7 @@ export async function fetchConjuntosPaginated(page = 1, limit = 20, filters = {}
   if (cache.catalog && isCatalogCacheValid()) {
     try {
       const result = filterCatalogSnapshot(cache.catalog, validFilters, validPage, validLimit);
-      return {
-        data: result.data,
-        pagination: result.pagination,
-      };
+      return { data: result.data, pagination: result.pagination };
     } catch (e) {
       console.warn("fetchConjuntosPaginated: fallback para API (erro no filtro local):", e.message || e);
     }
@@ -641,9 +628,7 @@ export async function fetchConjuntosPaginated(page = 1, limit = 20, filters = {}
 
 export async function fetchProductDetails(code) {
   const validCode = validateProductCode(code);
-  if (!validCode) {
-    throw new Error("Código do produto inválido");
-  }
+  if (!validCode) throw new Error("Código do produto inválido");
 
   const normalizedCode = normalizeCodeFront(validCode);
 
@@ -656,9 +641,7 @@ export async function fetchProductDetails(code) {
 
     if (byProducts) {
       const conjuntos = (Array.isArray(snap.conjuntos) ? snap.conjuntos : [])
-        .filter(
-          (c) => (c.pai || c.codigo_conjunto || "").toString().trim().toUpperCase() === normalizedCode
-        )
+        .filter((c) => (c.pai || c.codigo_conjunto || "").toString().trim().toUpperCase() === normalizedCode)
         .map((c) => ({
           filho: c.filho || c.codigo || c.codigo_componente || "",
           filho_des: c.filho_des || c.descricao || c.des || null,
@@ -694,15 +677,6 @@ export async function fetchProductDetails(code) {
 
   const url = `${API_BASE_URL}/products/${encodeURIComponent(normalizedCode)}`;
   const resp = await fetchWithRetry(url);
-
-  const contentType = resp.headers.get("content-type") || "";
-  if (contentType.includes("text/html")) {
-    const text = await resp.text();
-    throw new Error(
-      `Resposta inesperada (HTML). Conteúdo truncado: ${text.substring(0, 200).replace(/\s+/g, " ")}`
-    );
-  }
-
   return handleResponse(resp);
 }
 

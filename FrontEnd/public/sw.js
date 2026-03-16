@@ -1,70 +1,72 @@
-// Basic service worker with caching strategies for offline support
-const CACHE_NAME = 'abr-catalogo-v1';
-const PRECACHE_URLS = [
-  '/',
-  '/index.html'
-];
+const CACHE_NAME = "abr-catalogo-v2026-03-16-3";
+const APP_SHELL = ["/", "/index.html"];
 
-self.addEventListener('install', (event) => {
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(
-      keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
-    )).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME)
+            .map((key) => caches.delete(key))
+        )
+      )
+      .then(() => self.clients.claim())
   );
 });
 
-// A simple fetch handler:
-// - navigation requests: network-first, fallback to cache
-// - API requests (/api): network-first
-// - other requests: cache-first then network
-self.addEventListener('fetch', (event) => {
-  const { request } = event;
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
   const url = new URL(request.url);
 
-  // Only handle same-origin requests
-  if (url.origin !== location.origin) return;
+  // Nunca interceptar chamadas da API
+  if (url.pathname.startsWith("/api/")) {
+    return;
+  }
 
-  if (request.mode === 'navigate') {
+  // Nunca interceptar métodos diferentes de GET
+  if (request.method !== "GET") {
+    return;
+  }
+
+  // Navegação SPA: network first, fallback index.html
+  if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).then((resp) => {
-        const responseClone = resp.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
-        return resp;
-      }).catch(() => caches.match('/index.html'))
+      fetch(request)
+        .then((response) => response)
+        .catch(() => caches.match("/index.html"))
     );
     return;
   }
 
-  if (url.pathname.startsWith('/api')) {
-    // network-first for API
-    event.respondWith(
-      fetch(request).then((resp) => {
-        const copy = resp.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        return resp;
-      }).catch(() => caches.match(request))
-    );
-    return;
-  }
-
-  // For static resources: try cache first
+  // Assets estáticos: cache first com fallback network
   event.respondWith(
-    caches.match(request).then((cached) => cached || fetch(request).then((resp) => {
-      // cache fetched assets for future
-      if (resp && resp.status === 200 && request.method === 'GET') {
-        const copy = resp.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+    caches.match(request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
       }
-      return resp;
-    }).catch(() => {
-      // fallback to nothing
-      return cached;
-    }))
+
+      return fetch(request).then((networkResponse) => {
+        // Só cacheia respostas válidas e do mesmo domínio
+        if (
+          networkResponse &&
+          networkResponse.status === 200 &&
+          url.origin === self.location.origin
+        ) {
+          const cloned = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, cloned));
+        }
+
+        return networkResponse;
+      });
+    })
   );
 });
