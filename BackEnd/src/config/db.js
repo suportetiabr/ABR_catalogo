@@ -3,16 +3,14 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-// Validação das variáveis de ambiente obrigatórias
 const requiredEnvVars = ["DB_HOST", "DB_USER", "DB_PASS", "DB_NAME"];
+
 requiredEnvVars.forEach((envVar) => {
   if (!process.env[envVar]) {
     throw new Error(`Variável de ambiente obrigatória não encontrada: ${envVar}`);
   }
 });
 
-// Pool de conexões com configuração otimizada
-// Nota: mysql2/promise retorna diretamente um pool com métodos promise
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: parseInt(process.env.DB_PORT || "3306", 10),
@@ -20,135 +18,191 @@ const pool = mysql.createPool({
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
 
-  // Configuração de pool otimizada para consumo eficiente de recursos
-  waitForConnections: true,                                         // Aguardar por conexão disponível ao invés de falhar
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),  // Limite máximo de conexões ativas
-  queueLimit: 0,                                                    // Ilimitado (use com cuidado)
+  waitForConnections: true,
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),
+  queueLimit: 0,
 
-  // Segurança e confiabilidade
-  enableKeepAlive: true,                // Manter conexão viva
-  decimalNumbers: true,                 // Preservar precisão de números decimais
-  multipleStatements: false,            // Desabilitar múltiplas statements (segurança)
-  supportBigNumbers: true,              // Suportar números grandes
-  bigNumberStrings: false,              // Retornar como número, não string
+  connectTimeout: parseInt(process.env.DB_CONNECT_TIMEOUT || "10000", 10),
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
 
-  // Configurações de charset
+  decimalNumbers: true,
+  multipleStatements: false,
+  supportBigNumbers: true,
+  bigNumberStrings: false,
   charset: "utf8mb4",
-
-  // Tratamento de timezone
   timezone: process.env.DB_TIMEZONE || "+00:00",
 });
 
+function isRetryableDbError(error) {
+  return [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "EHOSTUNREACH",
+    "EPIPE",
+    "PROTOCOL_CONNECTION_LOST",
+    "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR",
+    "PROTOCOL_ENQUEUE_AFTER_DESTROY",
+    "PROTOCOL_SEQUENCE_TIMEOUT",
+  ].includes(error?.code);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Executa uma query SQL com prepared statements (seguro contra SQL injection)
- * Com retry automático para erros de conexão transitórios
- * @param {string} sql - Comando SQL com placeholders (?)
- * @param {Array} params - Parâmetros para a query
- * @param {number} retryCount - Número de tentativas restantes
- * @returns {Promise<Array>} Resultado da query
+ * Executa query com retry para erros transitórios de conexão
+ * Usa execute() para placeholders seguros
  */
 export async function query(sql, params = [], retryCount = 2) {
+  if (!sql || typeof sql !== "string") {
+    throw new Error("SQL deve ser uma string não-vazia");
+  }
+
+  let attempt = 0;
+  let lastError;
+
+  while (attempt <= retryCount) {
+    try {
+      const start = Date.now();
+
+      if (process.env.SQL_DEBUG === "true") {
+        console.debug(
+          `SQL START (${new Date().toISOString()}): ${sql.substring(0, 200)} params=${params.length}`
+        );
+      }
+
+      const [rows] = await pool.execute(sql, params);
+
+      const duration = Date.now() - start;
+      if (process.env.SQL_DEBUG === "true") {
+        console.debug(
+          `SQL OK (${duration}ms): returned ${Array.isArray(rows) ? rows.length : "n/a"} rows`
+        );
+      }
+
+      return rows;
+    } catch (error) {
+      lastError = error;
+
+      if (isRetryableDbError(error) && attempt < retryCount) {
+        const delay = Math.pow(2, attempt) * 500; // 500ms, 1000ms...
+        console.warn(
+          `Erro transitório no BD (${error.code}). Retry ${attempt + 1}/${retryCount} em ${delay}ms...`
+        );
+        await sleep(delay);
+        attempt += 1;
+        continue;
+      }
+
+      console.error("Erro na query:", {
+        sql: sql.substring(0, 100),
+        params: params.length,
+        error: error.message,
+        code: error.code,
+        timestamp: new Date().toISOString(),
+      });
+
+      throw error;
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Inicia transação com liberação segura da conexão
+ */
+export async function beginTransaction() {
+  let connection;
+
   try {
-    if (!sql || typeof sql !== "string") {
-      throw new Error("SQL deve ser uma string não-vazia");
-    }
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const start = Date.now();
-    if (process.env.SQL_DEBUG === 'true') {
-      console.debug(`SQL START (${new Date().toISOString()}): ${sql.substring(0, 200)} params=${params.length}`);
-    }
+    return {
+      query: async (sql, params = []) => {
+        if (!sql || typeof sql !== "string") {
+          throw new Error("SQL deve ser uma string não-vazia");
+        }
 
-    const [rows] = await pool.query(sql, params);
-
-    const duration = Date.now() - start;
-    if (process.env.SQL_DEBUG === 'true') {
-      console.debug(`SQL OK (${duration}ms): returned ${Array.isArray(rows) ? rows.length : 'n/a'} rows`);
-    }
-
-    return rows;
+        const [rows] = await connection.execute(sql, params);
+        return rows;
+      },
+      commit: async () => {
+        try {
+          await connection.commit();
+        } finally {
+          connection.release();
+        }
+      },
+      rollback: async () => {
+        try {
+          await connection.rollback();
+        } finally {
+          connection.release();
+        }
+      },
+    };
   } catch (error) {
-    // Classificar tipo de erro
-    const isConnectionError =
-      error.code === "ECONNREFUSED" ||
-      error.code === "ENOTFOUND" ||
-      error.code === "PROTOCOL_CONNECTION_LOST" ||
-      error.code === "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR" ||
-      error.code === "PROTOCOL_ENQUEUE_AFTER_DESTROY";
-
-    const isTimeout =
-      error.code === "PROTOCOL_SEQUENCE_TIMEOUT" ||
-      error.code === "ETIMEDOUT" ||
-      error.code === "EHOSTUNREACH";
-
-    // Se for erro de conexão/timeout e ainda temos retries, aguardar e tentar novamente
-    if ((isConnectionError || isTimeout) && retryCount > 0) {
-      const delay = Math.pow(2, 3 - retryCount) * 500; // Backoff exponencial: 500ms, 1000ms
-      console.warn(
-        `Erro de conexão ao BD (${error.code}). Aguardando ${delay}ms antes de retry #${3 - retryCount}...`
-      );
-
-      // Aguardar antes de tentar novamente
-      await new Promise((resolve) => setTimeout(resolve, delay));
-
-      // Tentar novamente recursivamente
-      return query(sql, params, retryCount - 1);
+    if (connection) {
+      try {
+        connection.release();
+      } catch {
+        // ignore
+      }
     }
-
-    // Log estruturado do erro (sem expor dados sensíveis)
-    console.error("Erro na query:", {
-      sql: sql.substring(0, 100),
-      params: params.length,
-      error: error.message,
-      code: error.code,
-      timestamp: new Date().toISOString(),
-    });
-
     throw error;
   }
 }
 
 /**
- * Inicia uma transação
- * @returns {Promise<Object>} Objeto com métodos commit(), rollback() e query()
+ * Ping simples no banco
  */
-export async function beginTransaction() {
-  const connection = await pool.getConnection();
-  await connection.beginTransaction();
+export async function testConnection() {
+  let connection;
 
-  return {
-    query: async (sql, params = []) => {
-      if (!sql || typeof sql !== "string") {
-        throw new Error("SQL deve ser uma string não-vazia");
+  try {
+    connection = await pool.getConnection();
+    await connection.ping();
+    console.log("Conexão com banco validada com sucesso");
+    return true;
+  } catch (error) {
+    console.error("Erro ao testar conexão com banco:", {
+      error: error.message,
+      code: error.code,
+      timestamp: new Date().toISOString(),
+    });
+    throw error;
+  } finally {
+    if (connection) {
+      try {
+        connection.release();
+      } catch {
+        // ignore
       }
-      const [rows] = await connection.query(sql, params);
-      return rows;
-    },
-    commit: async () => {
-      await connection.commit();
-      connection.release();
-    },
-    rollback: async () => {
-      await connection.rollback();
-      connection.release();
-    },
-  };
+    }
+  }
 }
 
 /**
- * Obtém status do pool de conexões
- * @returns {Object} Informações do pool
+ * Status do pool
  */
 export function getPoolStatus() {
+  const internalPool = pool.pool || pool;
+
   return {
-    activeConnections: pool._allConnections?.length || 0,
-    idleConnections: pool._freeConnections?.length || 0,
-    waitingQueue: pool._connectionQueue?.length || 0,
+    activeConnections: internalPool?._allConnections?.length || 0,
+    idleConnections: internalPool?._freeConnections?.length || 0,
+    waitingQueue: internalPool?._connectionQueue?.length || 0,
   };
 }
 
 /**
- * Fecha o pool de conexões (para graceful shutdown)
- * @returns {Promise<void>}
+ * Graceful shutdown
  */
 export async function closePool() {
   try {
@@ -159,3 +213,6 @@ export async function closePool() {
     throw error;
   }
 }
+
+export { pool };
+export default pool;
