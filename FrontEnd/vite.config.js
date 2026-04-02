@@ -5,27 +5,27 @@ export default defineConfig({
     plugins: [react()],
     build: {
         sourcemap: false,
+        minify: 'terser',
+        target: 'es2015',
+        cssCodeSplit: true,
         rollupOptions: {
             output: {
                 manualChunks(id) {
-                    if (id.includes("node_modules")) {
-                        if (id.includes("react") || id.includes("react-dom")) {
-                            return "vendor";
-                        }
-                        if (id.includes("react-router-dom")) {
-                            return "router";
-                        }
-                        if (id.includes("react-icons")) {
-                            return "ui";
-                        }
-                        return "vendor";
+                    if (id.includes('node_modules/react')) {
+                        return 'react-vendor';
                     }
-                },
-            },
-        },
-        chunkSizeWarningLimit: 1000,
+                    if (id.includes('node_modules/react-router')) {
+                        return 'react-router';
+                    }
+                    if (id.includes('node_modules')) {
+                        return 'vendor';
+                    }
+                }
+            }
+        }
     },
     server: {
         port: 3000,
-    },
+        open: false
+    }
 });

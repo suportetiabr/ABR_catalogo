@@ -15,6 +15,7 @@ import {
 } from "../services/productService";
 import { getImageUrl as utilGetImageUrl } from "../utils/imageUtils";
 import { useCatalogState } from "../contexts/CatalogContext";
+import "../styles/CatalogPage.css";
 
 const HARDCODED_FABRICANTES = [
   "AGRALE", "ASIA", "CASE", "CBT", "CITROEN", "CUMMINS",
